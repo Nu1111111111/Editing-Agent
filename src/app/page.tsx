@@ -1,95 +1,155 @@
-import Link from 'next/link';
-import { Scissors, Wand2, Captions, Zap, Sparkles, Upload as UploadIcon } from 'lucide-react';
+'use client';
 
-export default function Home() {
-  return (
-    <main className="min-h-screen">
-      {/* Nav */}
-      <nav className="flex items-center justify-between px-6 lg:px-12 py-5">
-        <div className="flex items-center gap-2 font-display text-xl font-bold">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-accent2 grid place-items-center">
-            <Scissors className="w-4 h-4" />
-          </div>
-          ViralCut
-        </div>
-        <div className="flex items-center gap-3">
-          <Link href="/login" className="btn-ghost">Login</Link>
-          <Link href="/signup" className="btn-primary">Kostenlos starten</Link>
-        </div>
-      </nav>
+import { useState, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
+import { useDropzone } from 'react-dropzone';
+import { toast } from 'sonner';
+import { setDoc } from 'firebase/firestore';
+import { useAuth } from '@/lib/firebase/auth';
+import { projectRef, assetRef } from '@/lib/firebase/db';
+import { uploadFile, buildStoragePath } from '@/lib/firebase/storage';
+import AppShell from '@/components/layout/AppShell';
+import { Upload, Film, Image as ImgIcon, Music, FileVideo, X, Loader2 } from 'lucide-react';
+import { v4 as uuid } from 'uuid';
+import { cn, formatBytes } from '@/lib/utils';
+import type { AssetKind } from '@/types/database';
 
-      {/* Hero */}
-      <section className="max-w-6xl mx-auto px-6 pt-16 pb-24 text-center">
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface2 border border-border text-xs text-white/70 mb-6">
-          <Sparkles className="w-3 h-3 text-accent" />
-          AI-gestützt · 100% Browser-basiert · 0 € / Monat
-        </div>
-        <h1 className="font-display text-5xl md:text-7xl font-bold tracking-tight leading-[1.05]">
-          Rohmaterial rein.<br />
-          <span className="bg-gradient-to-r from-accent to-accent2 bg-clip-text text-transparent">
-            Virale Cuts raus.
-          </span>
-        </h1>
-        <p className="mt-6 text-lg text-white/70 max-w-2xl mx-auto">
-          Lade dein Talking-Head-Video hoch — die AI schneidet Filler raus, trackt das Gesicht,
-          generiert animierte Captions und rendert ein fertiges 9:16-Reel. Alles im Browser.
-          Keine API-Kosten.
-        </p>
-        <div className="mt-10 flex items-center justify-center gap-3">
-          <Link href="/signup" className="btn-primary text-base px-6 py-3">
-            <UploadIcon className="w-4 h-4" /> Erstes Video editieren
-          </Link>
-          <a href="#features" className="btn-secondary text-base px-6 py-3">
-            Features ansehen
-          </a>
-        </div>
-      </section>
-
-      {/* Features */}
-      <section id="features" className="max-w-6xl mx-auto px-6 pb-24 grid md:grid-cols-3 gap-4">
-        <FeatureCard
-          icon={<Scissors className="w-5 h-5" />}
-          title="Auto-Cut"
-          text="Entfernt äh, ähm, Pausen, schlechte Takes — automatisch."
-        />
-        <FeatureCard
-          icon={<Captions className="w-5 h-5" />}
-          title="Viral Captions"
-          text="Wort-für-Wort Animation, Keyword-Highlighting, mobile-first."
-        />
-        <FeatureCard
-          icon={<Wand2 className="w-5 h-5" />}
-          title="Face Tracking"
-          text="MediaPipe-basiertes Reframing. Gesicht bleibt immer im Fokus."
-        />
-        <FeatureCard
-          icon={<Zap className="w-5 h-5" />}
-          title="Punch Zooms"
-          text="Algorithmus-optimierte Zooms an emotionalen Peaks."
-        />
-        <FeatureCard
-          icon={<Sparkles className="w-5 h-5" />}
-          title="B-Roll Integration"
-          text="Intelligente Platzierung von Bildern und Overlays."
-        />
-        <FeatureCard
-          icon={<UploadIcon className="w-5 h-5" />}
-          title="One-Click Export"
-          text="Reels, TikTok, Shorts — alle Presets ready-to-post."
-        />
-      </section>
-    </main>
-  );
+interface PendingFile {
+  id: string; file: File; kind: AssetKind; progress: number; done: boolean; error?: string;
 }
 
-function FeatureCard({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) {
+const KIND_LABELS: Record<AssetKind, string> = {
+  raw: 'Rohvideo', broll: 'B-Roll', image: 'Bild', reference: 'Referenz', sfx: 'Soundeffekt', music: 'Musik',
+};
+const KIND_ICONS: Record<AssetKind, typeof Film> = {
+  raw: Film, broll: FileVideo, image: ImgIcon, reference: Film, sfx: Music, music: Music,
+};
+function inferKind(file: File): AssetKind {
+  if (file.type.startsWith('image/')) return 'image';
+  if (file.type.startsWith('audio/')) return 'music';
+  return 'raw';
+}
+
+export default function UploadPage() {
+  const router = useRouter();
+  const { user } = useAuth();
+  const [projectName, setProjectName] = useState('');
+  const [files, setFiles] = useState<PendingFile[]>([]);
+  const [creating, setCreating] = useState(false);
+
+  const onDrop = useCallback((accepted: File[]) => {
+    setFiles((prev) => [...prev, ...accepted.map((file) => ({ id: uuid(), file, kind: inferKind(file), progress: 0, done: false }))]);
+  }, []);
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop, accept: { 'video/*': [], 'image/*': [], 'audio/*': [] },
+  });
+
+  function removeFile(id: string) { setFiles((prev) => prev.filter((f) => f.id !== id)); }
+  function setKind(id: string, kind: AssetKind) { setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, kind } : f))); }
+
+  async function startProcessing() {
+    if (!user) { toast.error('Nicht eingeloggt.'); return; }
+    if (!projectName.trim()) { toast.error('Bitte gib einen Projektnamen ein.'); return; }
+    if (!files.some((f) => f.kind === 'raw')) { toast.error('Du brauchst mindestens ein Rohvideo.'); return; }
+
+    setCreating(true);
+    const projectId = uuid();
+    const now = new Date().toISOString();
+    try {
+      await setDoc(projectRef(user.uid, projectId), {
+        name: projectName.trim(),
+        status: 'draft',
+        thumbnail_url: null,
+        duration_seconds: null,
+        aspect_ratio: '9:16',
+        created_at: now,
+        updated_at: now,
+      });
+
+      for (const f of files) {
+        const ext = f.file.name.split('.').pop() ?? 'bin';
+        const path = buildStoragePath(user.uid, projectId, f.id, ext);
+        try {
+          await uploadFile(path, f.file);
+          await setDoc(assetRef(user.uid, projectId, f.id), {
+            kind: f.kind,
+            storage_path: path,
+            filename: f.file.name,
+            mime_type: f.file.type,
+            size_bytes: f.file.size,
+            duration_seconds: null,
+            width: null,
+            height: null,
+            metadata: {},
+            created_at: now,
+          });
+          setFiles((prev) => prev.map((x) => (x.id === f.id ? { ...x, progress: 100, done: true } : x)));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Upload-Fehler';
+          setFiles((prev) => prev.map((x) => (x.id === f.id ? { ...x, error: msg } : x)));
+        }
+      }
+
+      toast.success('Upload abgeschlossen — AI startet.');
+      router.push(`/editor/${projectId}?autostart=1`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Projekt konnte nicht erstellt werden.');
+      setCreating(false);
+    }
+  }
+
   return (
-    <div className="card p-5">
-      <div className="w-10 h-10 rounded-lg bg-surface2 grid place-items-center text-accent mb-3">
-        {icon}
+    <AppShell>
+      <div className="p-8 max-w-4xl mx-auto">
+        <h1 className="text-3xl font-display font-bold mb-2">Neues Projekt</h1>
+        <p className="text-white/60 mb-8">Lade Rohvideos, B-Roll, Bilder und Referenzen hoch.</p>
+
+        <div className="card p-6 mb-6">
+          <label className="block text-sm font-medium mb-1.5">Projektname</label>
+          <input className="input" value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="z.B. Kunde X — Reel #4" />
+        </div>
+
+        <div {...getRootProps()}
+          className={cn('card p-12 border-2 border-dashed transition cursor-pointer text-center',
+            isDragActive ? 'border-accent bg-accent/5' : 'border-border hover:border-accent/50')}>
+          <input {...getInputProps()} />
+          <Upload className="w-10 h-10 mx-auto mb-3 text-white/40" />
+          <p className="font-medium mb-1">Drag &amp; Drop oder Klicken zum Hochladen</p>
+          <p className="text-sm text-white/60">Videos, Bilder, Audio — alles auf einmal</p>
+        </div>
+
+        {files.length > 0 && (
+          <div className="mt-6 card p-4">
+            <div className="text-sm font-medium mb-3">{files.length} Datei{files.length === 1 ? '' : 'en'}</div>
+            <div className="space-y-2">
+              {files.map((f) => {
+                const Icon = KIND_ICONS[f.kind];
+                return (
+                  <div key={f.id} className="flex items-center gap-3 p-3 bg-surface2 rounded-lg">
+                    <Icon className="w-5 h-5 shrink-0 text-white/60" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{f.file.name}</div>
+                      <div className="text-xs text-white/40">{formatBytes(f.file.size)}</div>
+                    </div>
+                    <select value={f.kind} onChange={(e) => setKind(f.id, e.target.value as AssetKind)} disabled={creating}
+                      className="text-xs bg-background border border-border rounded px-2 py-1">
+                      {(Object.keys(KIND_LABELS) as AssetKind[]).map((k) => <option key={k} value={k}>{KIND_LABELS[k]}</option>)}
+                    </select>
+                    {f.done ? <span className="text-xs text-success">✓</span>
+                    : f.error ? <span className="text-xs text-accent" title={f.error}>!</span>
+                    : creating ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <button onClick={() => removeFile(f.id)} className="text-white/40 hover:text-white"><X className="w-4 h-4" /></button>}
+                  </div>
+                );
+              })}
+            </div>
+            <button onClick={startProcessing} disabled={creating} className="btn-primary w-full mt-4">
+              {creating ? <><Loader2 className="w-4 h-4 animate-spin" /> Lade hoch…</> : <>AI starten →</>}
+            </button>
+          </div>
+        )}
       </div>
-      <div className="font-semibold mb-1">{title}</div>
-      <p className="text-sm text-white/60">{text}</p>
-    </div>
+    </AppShell>
   );
 }
