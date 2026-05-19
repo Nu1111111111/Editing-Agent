@@ -1,12 +1,11 @@
-import { updateSession } from '@/lib/supabase/middleware';
-import { type NextRequest } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 
-export async function middleware(request: NextRequest) {
-  return await updateSession(request);
+// Firebase Auth is fully client-side — no middleware needed.
+// This stub stays to keep Next.js happy if you ever want to add edge logic.
+export function middleware(_request: NextRequest) {
+  return NextResponse.next();
 }
 
 export const config = {
-  matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
-  ],
+  matcher: [],
 };
