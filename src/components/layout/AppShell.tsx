@@ -2,19 +2,31 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Scissors, LayoutDashboard, Upload, LogOut } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
+import { useEffect } from 'react';
+import { Scissors, LayoutDashboard, Upload, LogOut, Loader2 } from 'lucide-react';
+import { useAuth, logout } from '@/lib/firebase/auth';
 import { cn } from '@/lib/utils';
 
-export default function AppShell({ children, userEmail }: { children: React.ReactNode; userEmail?: string }) {
+export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const { user, loading } = useAuth();
 
-  async function logout() {
-    const supabase = createClient();
-    await supabase.auth.signOut();
+  useEffect(() => {
+    if (!loading && !user) router.push('/login');
+  }, [loading, user, router]);
+
+  if (loading || !user) {
+    return (
+      <div className="grid place-items-center h-screen">
+        <Loader2 className="w-6 h-6 animate-spin text-accent" />
+      </div>
+    );
+  }
+
+  async function handleLogout() {
+    await logout();
     router.push('/');
-    router.refresh();
   }
 
   const nav = [
@@ -38,14 +50,9 @@ export default function AppShell({ children, userEmail }: { children: React.Reac
             const Icon = item.icon;
             const active = pathname === item.href || pathname.startsWith(item.href + '/');
             return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cn(
-                  'flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition',
-                  active ? 'bg-surface2 text-white' : 'text-white/60 hover:text-white hover:bg-surface2/50'
-                )}
-              >
+              <Link key={item.href} href={item.href}
+                className={cn('flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition',
+                  active ? 'bg-surface2 text-white' : 'text-white/60 hover:text-white hover:bg-surface2/50')}>
                 <Icon className="w-4 h-4" />
                 {item.label}
               </Link>
@@ -53,8 +60,8 @@ export default function AppShell({ children, userEmail }: { children: React.Reac
           })}
         </nav>
         <div className="p-3 border-t border-border">
-          <div className="text-xs text-white/40 px-3 mb-2 truncate">{userEmail}</div>
-          <button onClick={logout} className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-white/60 hover:text-white hover:bg-surface2 transition">
+          <div className="text-xs text-white/40 px-3 mb-2 truncate">{user.email}</div>
+          <button onClick={handleLogout} className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-white/60 hover:text-white hover:bg-surface2 transition">
             <LogOut className="w-4 h-4" /> Logout
           </button>
         </div>
